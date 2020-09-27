@@ -10,12 +10,12 @@ import {
   DI,
   IServiceLocator,
 } from '@aurelia/kernel';
-import { AnyBindingExpression, IsBindingBehavior } from './ast';
+import { AnyBindingExpression, IsBindingBehavior, IAccessMemberExpression, IExpression } from './ast';
 import { CallBinding } from './binding/call-binding';
 import { BindingType, IExpressionParser } from './binding/expression-parser';
 import { InterpolationBinding, MultiInterpolationBinding } from './binding/interpolation-binding';
 import { LetBinding } from './binding/let-binding';
-import { PropertyBinding } from './binding/property-binding';
+import { PropertyBinding, OptimizedPropertyBinding } from './binding/property-binding';
 import { RefBinding } from './binding/ref-binding';
 import {
   ICallBindingInstruction,
@@ -36,7 +36,7 @@ import {
   mergeParts
 } from './definitions';
 import { INode } from './dom';
-import { BindingMode, LifecycleFlags } from './flags';
+import { BindingMode, LifecycleFlags, ExpressionKind } from './flags';
 import {
   IController,
   ILifecycle,
@@ -558,11 +558,21 @@ export class PropertyBindingRenderer implements IInstructionRenderer {
     instruction: IPropertyBindingInstruction,
   ): void {
     const expr = ensureExpression(this.parser, instruction.from, BindingType.IsPropertyCommand | instruction.mode);
-    const binding = applyBindingBehavior(
-      new PropertyBinding(expr, getTarget(target), instruction.to, instruction.mode, this.observerLocator, context),
-      expr,
-      context,
-    );
+    // expression that looks like this
+    // obj.prop
+    // obj.prop.prop1.prop2....
+    // are considered optimizable, which means there's a "hierarchy" in the observers
+    // if the leaf value change, no need to reobserve the entire expression,
+    // also there's no need to re-evaluate the entire expression either
+    const canOptimize = instruction.mode === BindingMode.toView && isOptimizableExpression(expr, null, expr);
+
+    const binding = canOptimize
+      ? new OptimizedPropertyBinding(expr, getTarget(target), instruction.to, this.observerLocator, context)
+      : applyBindingBehavior(
+        new PropertyBinding(expr, getTarget(target), instruction.to, instruction.mode, this.observerLocator, context),
+        expr,
+        context,
+      );
     controller.addBinding(binding);
   }
 }
@@ -613,4 +623,37 @@ export function applyBindingBehavior(
   }
   behaviorExpressions.length = 0;
   return binding;
+}
+
+const cachedOptimizedExpression = new WeakMap<IExpression, boolean>();
+function isOptimizableExpression(
+  expression: IsBindingBehavior,
+  owningExpression: IsBindingBehavior | null,
+  rootExpression: IsBindingBehavior,
+): boolean {
+  if (cachedOptimizedExpression.has(rootExpression)) {
+    return cachedOptimizedExpression.get(rootExpression)!;
+  }
+
+  switch (expression.$kind) {
+    case ExpressionKind.AccessScope:
+      if (owningExpression == null) {
+        cachedOptimizedExpression.set(rootExpression, true);
+        return true;
+      }
+      switch (owningExpression.$kind) {
+        case ExpressionKind.AccessMember:
+          cachedOptimizedExpression.set(rootExpression, true);
+          return true;
+        default:
+          cachedOptimizedExpression.set(rootExpression, false)
+          return false;
+      }
+    case ExpressionKind.AccessMember:
+      const $expr = expression as IAccessMemberExpression;
+      return isOptimizableExpression($expr.object, $expr, rootExpression);
+    default:
+      cachedOptimizedExpression.set(rootExpression, false);
+      return false;
+  }
 }

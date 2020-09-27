@@ -16,8 +16,6 @@ import { IObserverLocator } from '../observation/observer-locator';
 
 // TODO: add connect-queue (or something similar) back in when everything else is working, to improve startup time
 
-const slice = Array.prototype.slice;
-
 const slotNames: string[] = [];
 const versionSlotNames: string[] = [];
 let lastSlot = -1;
@@ -59,7 +57,7 @@ export function addObserver(
   // if we are not already observing, put the observer in an open slot and subscribe.
   if (i === -1) {
     i = 0;
-    while (this[slotNames[i]]) {
+    while (this[slotNames[i]] != null) {
       i++;
     }
     this[slotNames[i]] = observer;
@@ -106,8 +104,10 @@ export function unobserve(this: IConnectableBinding & { [key: string]: unknown }
         observer[this.id] &= ~LifecycleFlags.updateTargetInstance;
       }
     }
+    this.observerSlots = 0;
   } else {
     const version = this.version;
+    let removed = 0;
     for (let i = 0; i < slots; ++i) {
       if (this[versionSlotNames[i]] !== version) {
         slotName = slotNames[i];
@@ -116,20 +116,29 @@ export function unobserve(this: IConnectableBinding & { [key: string]: unknown }
           this[slotName] = void 0;
           observer.unsubscribe(this);
           observer[this.id] &= ~LifecycleFlags.updateTargetInstance;
+          ++removed;
         }
       }
     }
+    this.observerSlots = slots - removed;
   }
 }
 
 type DecoratableConnectable<TProto, TClass> = Class<TProto & Partial<IConnectableBinding> & IPartialConnectableBinding, TClass>;
 type DecoratedConnectable<TProto, TClass> = Class<TProto & IConnectableBinding, TClass>;
 
+const ensureProtoMethod = function<TProto, TMethodName extends keyof TProto = keyof TProto>(
+  proto: TProto,
+  methodName: TMethodName,
+  defaultImpl: TProto[TMethodName],
+) {
+  if (!Object.prototype.hasOwnProperty.call(proto, methodName)) proto[methodName] = defaultImpl;
+}
 function connectableDecorator<TProto, TClass>(target: DecoratableConnectable<TProto, TClass>): DecoratedConnectable<TProto, TClass> {
   const proto = target.prototype;
-  if (!Object.prototype.hasOwnProperty.call(proto, 'observeProperty')) proto.observeProperty = observeProperty;
-  if (!Object.prototype.hasOwnProperty.call(proto, 'unobserve')) proto.unobserve = unobserve;
-  if (!Object.prototype.hasOwnProperty.call(proto, 'addObserver')) proto.addObserver = addObserver;
+  ensureProtoMethod(proto, 'observeProperty', observeProperty as typeof proto['observeProperty']);
+  ensureProtoMethod(proto, 'unobserve', unobserve as typeof proto['unobserve']);
+  ensureProtoMethod(proto, 'addObserver', addObserver as typeof proto['addObserver']);
   return target as DecoratedConnectable<TProto, TClass>;
 }
 
